@@ -100,6 +100,93 @@ void decompressHuffman(char* outfilename) {
 	}
 }
 
+void compressResFile(std::ofstream& output, FrequencyTable& ft, std::vector<std::pair<int, int>>* vector) {
+	CodeTree code = ft.buildCodeTree();
+	const CanonicalCode canonCode(code, ft.getSymbolLimit());
+	// Replace code tree with canonical one. For each symbol,
+	// the code value may change but the code length stays the same.
+	code = canonCode.toCodeTree();
+
+	BitOutputStream bout(output);
+	try {
+
+		// Write code length table
+		for (uint32_t i = 0; i < canonCode.getSymbolLimit(); i++) {
+			uint32_t val = canonCode.getCodeLength(i);
+			// For this file format, we only support codes up to 255 bits long
+			if (val >= 256)
+				throw std::domain_error("The code for a symbol is too long");
+			// Write value as 8 bits in big endian
+			for (int j = 7; j >= 0; j--)
+				bout.write((val >> j) & 1);
+		}
+
+		HuffmanEncoder enc(bout);
+		enc.codeTree = &code;
+		for (size_t i = 0; i < 3; i++)
+		{
+			for (size_t j = 0; j < vector[i].size(); j++)
+			{
+				if (vector[i].at(j).first != 128)
+				{
+					for (size_t k = 0; k < vector[i].at(j).second; k++)
+					{
+						enc.write(vector[i].at(j).first);
+					}
+				}
+				else if (vector[i].at(j).first == 128 && vector[i].at(j).second <= 4)
+				{
+					for (size_t k = 0; k < vector[i].at(j).second; k++)
+					{
+						enc.write(vector[i].at(j).first);
+					}
+				}
+			}
+		}
+		//enc.write(256);  // EOF
+		bout.finish();
+	}
+	catch (const char* msg) {
+		std::cerr << msg << std::endl;
+	}
+}
+
+void decompressResFile(std::ifstream& input, std::vector<unsigned char> * resVector, int * len_res) {
+	BitInputStream bin(input);
+	try {
+
+		// Read code length table
+		std::vector<uint32_t> codeLengths;
+		for (int i = 0; i < 256; i++) {
+			// For this file format, we read 8 bits in big endian
+			uint32_t val = 0;
+			for (int j = 0; j < 8; j++)
+				val = (val << 1) | bin.readNoEof();
+			codeLengths.push_back(val);
+		}
+		const CanonicalCode canonCode(codeLengths);
+		const CodeTree code = canonCode.toCodeTree();
+
+		HuffmanDecoder dec(bin);
+		dec.codeTree = &code;
+		for (size_t i = 0; i < 3; i++)
+		{
+			for (size_t j = 0; j < len_res[i]; j++)
+			{
+				uint32_t symbol = dec.read();
+				unsigned char temp;
+				int b = static_cast<int>(symbol);
+				if (std::numeric_limits<char>::is_signed)
+					b -= (b >> 7) << 8;
+				resVector[i].push_back(static_cast<unsigned char>(b));
+			}
+		}
+	}
+	catch (const char* msg) {
+		std::cerr << msg << std::endl;
+	}
+}
+
 long get_file_size(const char* filename) {
 	struct stat statv;
 	int res = stat(filename, &statv);
@@ -112,6 +199,7 @@ int main(int argc, char * argv[])
 	if (argc != 2)
 	{
 		std::cout << "Need to provide a file name" << std::endl;
+		return -1;
 	}
 	// prepare data
 	infile.open(argv[1], std::ifstream::in);
@@ -125,10 +213,11 @@ int main(int argc, char * argv[])
 	while (!infile.eof())
 	{
 		numLines++;
-		int temp;
+		int temp = 0;
 		for (size_t j = 0; j < 3; j++)
 		{
-			infile >> std::hex >> temp;
+			//infile >> std::hex >> temp;
+			infile.read((char*)&temp, sizeof(unsigned char));
 			if (temp == prevValue[j])
 			{
 				repeatCounter[j]++;
@@ -175,6 +264,7 @@ int main(int argc, char * argv[])
 	}
 	infile.close();
 	// calculate total length of non-compressed sequences in each column
+	FrequencyTable frequencyTable(std::vector<uint32_t>(256, 0));
 	unsigned int offset = 0;
 	for (size_t i = 0; i < 3; i++)
 	{
@@ -184,10 +274,12 @@ int main(int argc, char * argv[])
 			{
 				lengthnon128[i] += compressVector[i].at(j).second;
 				offset += compressVector[i].at(j).second;
+				frequencyTable.set(compressVector[i].at(j).first, frequencyTable.get(compressVector[i].at(j).first) + compressVector[i].at(j).second);
 			}
 			else if (compressVector[i].at(j).first == 128 && compressVector[i].at(j).second <= 4) {
 				lengthnon128[i] += compressVector[i].at(j).second;
 				offset += compressVector[i].at(j).second;
+				frequencyTable.set(compressVector[i].at(j).first, frequencyTable.get(compressVector[i].at(j).first) + compressVector[i].at(j).second);
 			}
 			else
 			{
@@ -260,54 +352,24 @@ int main(int argc, char * argv[])
 		size128 = 0;
 		size128compr = 0;
 	}
+
+	for (size_t i = 0; i < 3; i++)
+	{
+		file128.write((char*)&lengthnon128[i], sizeof(int));
+		//std::cout << lengthnon128[i] << std::endl;
+		//file_residues << lengthnon128[i];
+	}
+	// store residues
+	compressResFile(file128, frequencyTable, compressVector);
+
 	file128.flush();
 	file128.close();
 
 	text_compress << "Total size of 128 sequences is : " << size128total << " bytes; compressed to " << size128comprtotal << "; ratio - " << (double)size128total / size128comprtotal << std::endl;
 	
-	// store residues
-	std::ofstream file_residues;
-	file_residues.open("residues.bin", std::ios::out | std::ios::binary);
-	for (size_t i = 0; i < 3; i++)
-	{
-		file_residues.write((char*)&lengthnon128[i], sizeof(int));
-		//std::cout << lengthnon128[i] << std::endl;
-		//file_residues << lengthnon128[i];
-	}
-	for (size_t i = 0; i < 3; i++)
-	{
-		for (size_t j = 0; j < compressVector[i].size(); j++)
-		{
-			if (compressVector[i].at(j).first != 128)
-			{
-				for (size_t k = 0; k < compressVector[i].at(j).second; k++)
-				{
-					file_residues.write((char*)&compressVector[i].at(j).first, sizeof(unsigned char));
-				}
-			}
-			else if (compressVector[i].at(j).first == 128 && compressVector[i].at(j).second <= 4)
-			{
-				for (size_t k = 0; k < compressVector[i].at(j).second; k++)
-				{
-					file_residues.write((char*)&compressVector[i].at(j).first, sizeof(unsigned char));
-				}
-			}
-		}
-	}
-	file_residues.flush();
-	file_residues.close();
-
-	// encode residues using Huffman
-	compressHuffman((char*)"residuesHuffman.bin");
-	// decode residues using Huffman
-	decompressHuffman((char*)"residues_restored.bin");
-	long beforeHuffman = get_file_size("residues.bin");
-	long afterHuffman = get_file_size("residuesHuffman.bin");
-	text_compress << "Size of residues before: " << beforeHuffman << "; size after : " << afterHuffman << std::endl;
-	text_compress << "Total size before : " << numLines * 3 << "; total after: " << afterHuffman + size128comprtotal << " ; ratio :" << (double)(numLines*3) / (afterHuffman + size128comprtotal)  << std::endl;
 	text_compress.flush();
 	text_compress.close();
-	// restore 128 sequence
+	// restore all sequences
 	std::ifstream in128;
 	in128.open("seq128.bin", std::ios::in | std::ios::binary);
 	int len128[3] = {0, 0, 0};
@@ -329,26 +391,18 @@ int main(int argc, char * argv[])
 			compressRestore[i].push_back(tempPair);
 		}
 	}
-	in128.close();
+	
 	// restore residues
-	std::ifstream inresidues;
-	inresidues.open("residues_restored.bin", std::ios::in | std::ios::binary);
 	int len_res[3] = { 0, 0, 0 };
 	for (size_t i = 0; i < 3; i++)
 	{
-		inresidues.read((char*)&len_res[i], sizeof(int));
-		//std::cout << len_res[i] << std::endl;
+		in128.read((char*)&len_res[i], sizeof(int));
+	//	//std::cout << len_res[i] << std::endl;
 	}
 	std::vector<unsigned char> residuesVectors[3];
-	for (size_t i = 0; i < 3; i++)
-	{
-		for (size_t j = 0; j < len_res[i]; j++)
-		{
-			unsigned char temp;
-			inresidues.read((char*)&temp, sizeof(unsigned char));
-			residuesVectors[i].push_back(temp);
-		}
-	}
+	
+	decompressResFile(in128, residuesVectors, len_res);
+	in128.close();
 	// restore file from sequences
 	bool procSequence[3];
 	int seqMarker[3] = { 0, 0, 0 };
@@ -369,7 +423,7 @@ int main(int argc, char * argv[])
 		}
 	}
 	std::ofstream frestored;
-	frestored.open("fresy_restored.txt");
+	frestored.open("fresy_restored.bin", std::ios::binary);
 	for (size_t i = 0; i < numLines; i++)
 	{
 		for (size_t j = 0; j < 3; j++)
@@ -419,11 +473,16 @@ int main(int argc, char * argv[])
 				}
 			}
 		}
-		frestored << std::hex << std::uppercase << curValue[0] << " " << curValue[1] << " " << curValue[2] << "\n";
+		//frestored << std::hex << std::uppercase << curValue[0] << " " << curValue[1] << " " << curValue[2] << "\n";
+		for (int k = 0; k < 3; k++)
+			frestored.write((char*)&curValue[k], sizeof(unsigned char));
 	}
 	frestored.flush();
 	frestored.close();
     std::cout << "Finished!\n";
+	long before = get_file_size(argv[1]);
+	long after = get_file_size("seq128.bin");
+	std::cout << "File size before: " << before << "; size after: " << after << "; ratio: " << (double)before / after << std::endl;
 }
 
 // Run program: Ctrl + F5 or Debug > Start Without Debugging menu

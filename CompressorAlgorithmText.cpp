@@ -112,6 +112,7 @@ int main(int argc, char * argv[])
 	if (argc != 2)
 	{
 		std::cout << "Need to provide a file name" << std::endl;
+		return -1;
 	}
 	// prepare data
 	infile.open(argv[1], std::ifstream::in);
