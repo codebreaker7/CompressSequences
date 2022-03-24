@@ -187,165 +187,6 @@ void decompressResFile(std::ifstream& input, std::vector<unsigned char> * resVec
 	}
 }
 
-void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* rleVectors, std::vector<std::pair<int, int>>* compressVectors) {
-	std::ofstream output;
-	output.open("compressed.bin", std::ios::out | std::ios::binary);
-	FrequencyTable freqs(std::vector<uint32_t>(256, 0));
-	for (size_t i = 0; i < 3; i++)
-	{
-		for (size_t j = 0; j < compressVectors[i].size(); j++)
-		{
-			if (compressVectors[i].at(j).first != 128 || (compressVectors[i].at(j).first == 128 && compressVectors[i].at(j).second <= 4))
-				freqs.set(compressVectors[i].at(j).first, freqs.get(compressVectors[i].at(j).first) + compressVectors[i].at(j).second);
-		}
-	}
-	for (size_t i = 0; i < 3; i++)
-	{
-		for (size_t j = 0; j < rleVectors[i].size(); j++)
-		{
-			uint8_t first = rleVectors[i].at(j).first >> 8;
-			uint8_t second = rleVectors[i].at(j).first & 0xff;
-			uint8_t third = rleVectors[i].at(j).second >> 8;
-			uint8_t fourth = rleVectors[i].at(j).second & 0xff;
-			freqs.set(first, freqs.get(first) + 1);
-			freqs.set(second, freqs.get(second) + 1);
-			freqs.set(third, freqs.get(third) + 1);
-			freqs.set(fourth, freqs.get(fourth) + 1);
-		}
-	}
-	CodeTree code = freqs.buildCodeTree();
-	const CanonicalCode canonCode(code, freqs.getSymbolLimit());
-	code = canonCode.toCodeTree();
-	BitOutputStream bout(output);
-	try {
-		// Write code length table
-		for (uint32_t i = 0; i < canonCode.getSymbolLimit(); i++) {
-			uint32_t val = canonCode.getCodeLength(i);
-			// For this file format, we only support codes up to 255 bits long
-			if (val >= 256)
-				throw std::domain_error("The code for a symbol is too long");
-			// Write value as 8 bits in big endian
-			for (int j = 7; j >= 0; j--)
-				bout.write((val >> j) & 1);
-		}
-
-		HuffmanEncoder enc(bout);
-		enc.codeTree = &code;
-		
-		for (size_t i = 0; i < 3; i++)
-		{
-			int curPos = 0;
-			int resRun = 0;
-			int next128 = 0;
-			int posInVector = 0;
-			// write first 128 sequence at the start
-			uint8_t first = rleVectors[i].at(0).first >> 8;
-			uint8_t second = rleVectors[i].at(0).first & 0xff;
-			uint8_t third = rleVectors[i].at(0).second >> 8;
-			uint8_t fourth = rleVectors[i].at(0).second & 0xff;
-			uint8_t seqArr[4] = { first, second, third, fourth };
-			for (size_t j = 0; j < 4; j++)
-			{
-				int symbol = seqArr[j];
-				if (symbol == EOF)
-					break;
-				if (symbol < 0 || symbol > 255)
-					throw std::logic_error("Assertion error");
-				enc.write(static_cast<uint32_t>(symbol));
-			}
-			bool marker;
-			if (rleVectors[i].at(0).first != 0)
-			{
-				resRun = rleVectors[i].at(0).first;
-				marker = true;
-				next128++;
-			}
-			else {
-				resRun = rleVectors[i].at(1).first;
-				next128++;
-				marker = false;
-			}
-			
-			curPos += rleVectors[i].at(0).second;
-			while (curPos != numLines)
-			{
-				// write residues
-				while (resRun != 0)
-				{
-					if (compressVectors[i].at(posInVector).first != 128 || (compressVectors[i].at(posInVector).first == 128 
-																			&& compressVectors[i].at(posInVector).second <= 4)) {
-						for (size_t k = 0; k < compressVectors[i].at(posInVector).second; k++)
-						{
-							int symbol = compressVectors[i].at(posInVector).first;
-							if (symbol == EOF)
-								break;
-							if (symbol < 0 || symbol > 255)
-								throw std::logic_error("Assertion error");
-							enc.write(static_cast<uint32_t>(symbol));
-						}
-						curPos += compressVectors[i].at(posInVector).second;
-						resRun -= compressVectors[i].at(posInVector).second;
-					}
-					posInVector++;
-					if (posInVector >= compressVectors[i].size())
-					{
-						break;
-					}
-				}
-				// write next 128 sequence
-				next128++;
-				if (next128 <= rleVectors[i].size())
-				{
-					uint8_t first = rleVectors[i].at(next128-1).first >> 8;
-					uint8_t second = rleVectors[i].at(next128-1).first & 0xff;
-					uint8_t third = rleVectors[i].at(next128-1).second >> 8;
-					uint8_t fourth = rleVectors[i].at(next128-1).second & 0xff;
-					uint8_t seqArr[4] = { first, second, third, fourth };
-					for (size_t j = 0; j < 4; j++)
-					{
-						int symbol = seqArr[j];
-						if (symbol == EOF)
-							break;
-						if (symbol < 0 || symbol > 255)
-							throw std::logic_error("Assertion error");
-						enc.write(static_cast<uint32_t>(symbol));
-					}
-					curPos += rleVectors[i].at(next128 - 1).second;
-					if (next128 == rleVectors[i].size())
-					{
-						resRun = numLines - curPos;
-					}
-					else
-					{
-						if (marker)
-							resRun = rleVectors[i].at(next128-1).first;
-						else
-							resRun = rleVectors[i].at(next128).first;
-					}
-					
-				}
-				
-			}
-		}
-		//while (true) {
-		//	// Read and encode one byte
-		//	int symbol = in.get();
-		//	if (symbol == EOF)
-		//		break;
-		//	if (symbol < 0 || symbol > 255)
-		//		throw std::logic_error("Assertion error");
-		//	enc.write(static_cast<uint32_t>(symbol));
-		//}
-	}
-	catch (const char* msg) {
-		std::cerr << msg << std::endl;
-	}
-}
-
-void decompressAsStream(int numLines) {
-
-}
-
 long get_file_size(const char* filename) {
 	struct stat statv;
 	int res = stat(filename, &statv);
@@ -464,12 +305,10 @@ int main(int argc, char * argv[])
 	unsigned int size128total = 0;
 	unsigned int size128compr = 0;
 	unsigned int size128comprtotal = 0;
-	std::vector<std::pair<uint16_t, uint16_t>> rleVectors[3];
 	for (size_t i = 0; i < 3; i++)
 	{
 		for (size_t j = 0; j < compressVector[i].size(); j++)
 		{
-			std::pair<uint16_t, uint16_t> tempVal;
 			if (compressVector[i].at(j).first == 128 && compressVector[i].at(j).second > 4)
 			{
 				size128 += compressVector[i].at(j).second;
@@ -480,9 +319,6 @@ int main(int argc, char * argv[])
 					while (offset > 65535) {
 						file128.write((char*)&temp, sizeof(unsigned short));
 						file128.write((char*)&temp_data, sizeof(unsigned short));
-						tempVal.first = temp;
-						tempVal.second = temp_data;
-						rleVectors[i].push_back(tempVal);
 						text_compress << std::dec << temp << " - " << temp_data << "\n";
 						size128compr += 4;
 						offset -= 65535;
@@ -490,9 +326,6 @@ int main(int argc, char * argv[])
 					temp = (unsigned short)offset;
 					file128.write((char*)&temp, sizeof(unsigned short));
 					file128.write((char*)&compressVector[i].at(j).second, sizeof(unsigned short));
-					tempVal.first = temp;
-					tempVal.second = compressVector[i].at(j).second;
-					rleVectors[i].push_back(tempVal);
 					size128compr += 4;
 					text_compress << std::dec << temp << " - " << compressVector[i].at(j).second << "\n";
 					offset = 0;
@@ -502,9 +335,6 @@ int main(int argc, char * argv[])
 					unsigned short temp = (unsigned short)offset;
 					file128.write((char*)&temp, sizeof(unsigned short));
 					file128.write((char*)&compressVector[i].at(j).second, sizeof(unsigned short));
-					tempVal.first = temp;
-					tempVal.second = compressVector[i].at(j).second;
-					rleVectors[i].push_back(tempVal);
 					size128compr += 4;
 					text_compress << std::dec << temp << " - " << compressVector[i].at(j).second << "\n";
 					offset = 0;
@@ -539,8 +369,6 @@ int main(int argc, char * argv[])
 	
 	text_compress.flush();
 	text_compress.close();
-
-	compressAsStream(numLines, rleVectors, compressVector);
 	// restore all sequences
 	std::ifstream in128;
 	in128.open("seq128.bin", std::ios::in | std::ios::binary);
