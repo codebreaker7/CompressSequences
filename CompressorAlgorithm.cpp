@@ -327,23 +327,82 @@ void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* 
 				
 			}
 		}
-		//while (true) {
-		//	// Read and encode one byte
-		//	int symbol = in.get();
-		//	if (symbol == EOF)
-		//		break;
-		//	if (symbol < 0 || symbol > 255)
-		//		throw std::logic_error("Assertion error");
-		//	enc.write(static_cast<uint32_t>(symbol));
-		//}
 	}
 	catch (const char* msg) {
 		std::cerr << msg << std::endl;
 	}
 }
 
-void decompressAsStream(int numLines) {
+uint8_t readSymbolFromDecoder(HuffmanDecoder& dec) {
+	uint32_t symbol = dec.read();
+	int b = static_cast<int>(symbol);
+	if (std::numeric_limits<char>::is_signed)
+		b -= (b >> 7) << 8;
+	return static_cast<uint8_t>(b);
+}
 
+void decompressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* rleVectors, std::vector<unsigned char>* resVector) {
+	std::ifstream input;
+	input.open("compressed.bin", std::ios::in | std::ios::binary);
+	BitInputStream bin(input);
+	try {
+
+		// Read code length table
+		std::vector<uint32_t> codeLengths;
+		for (int i = 0; i < 256; i++) {
+			// For this file format, we read 8 bits in big endian
+			uint32_t val = 0;
+			for (int j = 0; j < 8; j++)
+				val = (val << 1) | bin.readNoEof();
+			codeLengths.push_back(val);
+		}
+		const CanonicalCode canonCode(codeLengths);
+		const CodeTree code = canonCode.toCodeTree();
+
+		HuffmanDecoder dec(bin);
+		dec.codeTree = &code;
+		for (size_t i = 0; i < 3; i++)
+		{
+			int curPos = 0;
+			int resRun = 0;
+			int next128 = 0;
+			std::pair<uint16_t, uint16_t> tempPair;
+			uint8_t first = readSymbolFromDecoder(dec);
+			uint8_t second = readSymbolFromDecoder(dec);
+			uint8_t third = readSymbolFromDecoder(dec);
+			uint8_t fourth = readSymbolFromDecoder(dec);
+			tempPair.first = (first << 8) + second;
+			tempPair.second = (third << 8) + fourth;
+			rleVectors[i].push_back(tempPair);
+			resRun = rleVectors[i].at(0).first;
+			curPos += rleVectors[i].at(0).second;
+			uint8_t temp;
+			while (curPos != numLines)
+			{
+				// process residues
+				while (resRun != 0)
+				{
+					temp = readSymbolFromDecoder(dec);
+					resVector[i].push_back(temp);
+					resRun--;
+					curPos++;
+				}
+				// process sequences
+				uint8_t first = readSymbolFromDecoder(dec);
+				uint8_t second = readSymbolFromDecoder(dec);
+				uint8_t third = readSymbolFromDecoder(dec);
+				uint8_t fourth = readSymbolFromDecoder(dec);
+				tempPair.first = (first << 8) + second;
+				tempPair.second = (third << 8) + fourth;
+				rleVectors[i].push_back(tempPair);
+				resRun = rleVectors[i].at(rleVectors[i].size()-1).first;
+				curPos += rleVectors[i].at(rleVectors[i].size() - 1).second;
+			}
+		}
+	}
+	catch (const char* msg) {
+		std::cerr << msg << std::endl;
+	}
 }
 
 long get_file_size(const char* filename) {
