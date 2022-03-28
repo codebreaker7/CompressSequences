@@ -253,18 +253,7 @@ void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* 
 					throw std::logic_error("Assertion error");
 				enc.write(static_cast<uint32_t>(symbol));
 			}
-			bool marker;
-			if (rleVectors[i].at(0).first != 0)
-			{
-				resRun = rleVectors[i].at(0).first;
-				marker = true;
-				next128++;
-			}
-			else {
-				resRun = rleVectors[i].at(1).first;
-				next128++;
-				marker = false;
-			}
+			resRun = rleVectors[i].at(0).first;
 			
 			curPos += rleVectors[i].at(0).second;
 			while (curPos != numLines)
@@ -294,12 +283,13 @@ void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* 
 				}
 				// write next 128 sequence
 				next128++;
-				if (next128 <= rleVectors[i].size())
+				if (next128 == rleVectors[i].size()) break;
+				if (next128 < rleVectors[i].size())
 				{
-					uint8_t first = rleVectors[i].at(next128-1).first >> 8;
-					uint8_t second = rleVectors[i].at(next128-1).first & 0xff;
-					uint8_t third = rleVectors[i].at(next128-1).second >> 8;
-					uint8_t fourth = rleVectors[i].at(next128-1).second & 0xff;
+					uint8_t first = rleVectors[i].at(next128).first >> 8;
+					uint8_t second = rleVectors[i].at(next128).first & 0xff;
+					uint8_t third = rleVectors[i].at(next128).second >> 8;
+					uint8_t fourth = rleVectors[i].at(next128).second & 0xff;
 					uint8_t seqArr[4] = { first, second, third, fourth };
 					for (size_t j = 0; j < 4; j++)
 					{
@@ -310,23 +300,61 @@ void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* 
 							throw std::logic_error("Assertion error");
 						enc.write(static_cast<uint32_t>(symbol));
 					}
-					curPos += rleVectors[i].at(next128 - 1).second;
+					curPos += rleVectors[i].at(next128).second;
 					if (next128 == rleVectors[i].size())
 					{
 						resRun = numLines - curPos;
 					}
 					else
 					{
-						if (marker)
-							resRun = rleVectors[i].at(next128-1).first;
-						else
 							resRun = rleVectors[i].at(next128).first;
 					}
 					
 				}
 				
 			}
+			if (curPos != numLines)
+			{
+				resRun = numLines - curPos;
+				uint8_t first = resRun >> 8;
+				uint8_t second = resRun & 0xff;
+				uint8_t third = 0 >> 8;
+				uint8_t fourth = 0 & 0xff;
+				uint8_t seqArr[4] = { first, second, third, fourth };
+				for (size_t j = 0; j < 4; j++)
+				{
+					int symbol = seqArr[j];
+					if (symbol == EOF)
+						break;
+					if (symbol < 0 || symbol > 255)
+						throw std::logic_error("Assertion error");
+					enc.write(static_cast<uint32_t>(symbol));
+				}
+				while (resRun != 0)
+				{
+					if (compressVectors[i].at(posInVector).first != 128 || (compressVectors[i].at(posInVector).first == 128
+						&& compressVectors[i].at(posInVector).second <= 4)) {
+						for (size_t k = 0; k < compressVectors[i].at(posInVector).second; k++)
+						{
+							int symbol = compressVectors[i].at(posInVector).first;
+							if (symbol == EOF)
+								break;
+							if (symbol < 0 || symbol > 255)
+								throw std::logic_error("Assertion error");
+							enc.write(static_cast<uint32_t>(symbol));
+						}
+						curPos += compressVectors[i].at(posInVector).second;
+						resRun -= compressVectors[i].at(posInVector).second;
+					}
+					posInVector++;
+					if (posInVector >= compressVectors[i].size())
+					{
+						break;
+					}
+				}
+			}
 		}
+		bout.finish();
 	}
 	catch (const char* msg) {
 		std::cerr << msg << std::endl;
@@ -377,7 +405,7 @@ void decompressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>
 			resRun = rleVectors[i].at(0).first;
 			curPos += rleVectors[i].at(0).second;
 			uint8_t temp;
-			while (curPos != numLines)
+			while (curPos != (numLines))
 			{
 				// process residues
 				while (resRun != 0)
@@ -387,6 +415,7 @@ void decompressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>
 					resRun--;
 					curPos++;
 				}
+				if (curPos == (numLines)) break;
 				// process sequences
 				uint8_t first = readSymbolFromDecoder(dec);
 				uint8_t second = readSymbolFromDecoder(dec);
@@ -510,6 +539,10 @@ int main(int argc, char * argv[])
 			}
 		}
 	}
+	for (size_t i = 0; i < 256; i++)
+	{
+		std::cout << i << "-" << frequencyTable.get(i) << std::endl;
+	}
 	// store 128-based sequences
 	std::ofstream text_compress("compress.txt", std::ios::out);
 	std::ofstream file128;
@@ -599,41 +632,16 @@ int main(int argc, char * argv[])
 	text_compress.flush();
 	text_compress.close();
 
+	// compress all sequences and residues into a single file as a single stream
 	compressAsStream(numLines, rleVectors, compressVector);
-	// restore all sequences
-	std::ifstream in128;
-	in128.open("seq128.bin", std::ios::in | std::ios::binary);
-	int len128[3] = {0, 0, 0};
-	for (size_t i = 0; i < 3; i++)
-	{
-		in128.read((char*)&len128[i], sizeof(int));
-	}
-	std::vector<std::pair<unsigned short, unsigned short>> compressRestore[3];
-	for (size_t i = 0; i < 3; i++)
-	{
-		for (size_t j = 0; j < len128[i]; j++)
-		{
-			std::pair<unsigned short, unsigned short> tempPair;
-			unsigned short temp;
-			in128.read((char*)&temp, sizeof(unsigned short));
-			tempPair.first = temp;
-			in128.read((char*)&temp, sizeof(unsigned short));
-			tempPair.second = temp;
-			compressRestore[i].push_back(tempPair);
-		}
-	}
 	
-	// restore residues
-	int len_res[3] = { 0, 0, 0 };
-	for (size_t i = 0; i < 3; i++)
-	{
-		in128.read((char*)&len_res[i], sizeof(int));
-	//	//std::cout << len_res[i] << std::endl;
-	}
+	std::vector<std::pair<unsigned short, unsigned short>> compressRestore[3];
+	
 	std::vector<unsigned char> residuesVectors[3];
 	
-	decompressResFile(in128, residuesVectors, len_res);
-	in128.close();
+	// restore data structures to reproduce the original file
+	decompressAsStream(numLines, compressRestore, residuesVectors);
+
 	// restore file from sequences
 	bool procSequence[3];
 	int seqMarker[3] = { 0, 0, 0 };
@@ -666,7 +674,7 @@ int main(int argc, char * argv[])
 				if (seqLength[j] == 0)
 				{
 					seqMarker[j]++;
-					if (seqMarker[j] == compressRestore[j].size())
+					if (seqMarker[j] == compressRestore[j].size()-1)
 					{
 						procSequence[j] = false;
 						continue;
@@ -712,7 +720,7 @@ int main(int argc, char * argv[])
 	frestored.close();
     std::cout << "Finished!\n";
 	long before = get_file_size(argv[1]);
-	long after = get_file_size("seq128.bin");
+	long after = get_file_size("compressed.bin");
 	std::cout << "File size before: " << before << "; size after: " << after << "; ratio: " << (double)before / after << std::endl;
 }
 
