@@ -187,6 +187,39 @@ void decompressResFile(std::ifstream& input, std::vector<unsigned char> * resVec
 	}
 }
 
+void writeSymbolToCoder(HuffmanEncoder& enc, uint32_t symb) {
+	int symbol = symb;
+	if (symbol == EOF)
+		return;
+	if (symbol < 0 || symbol > 255)
+		throw std::logic_error("Assertion error");
+	enc.write(static_cast<uint32_t>(symbol));
+}
+
+void writeSequence(HuffmanEncoder& enc, std::pair<uint16_t, uint16_t>& pair) {
+	uint8_t first = pair.first >> 8;
+	uint8_t second = pair.first & 0xff;
+	uint8_t third = pair.second >> 8;
+	uint8_t fourth = pair.second & 0xff;
+	uint8_t seqArr[4] = { first, second, third, fourth };
+	for (size_t j = 0; j < 4; j++)
+	{
+		writeSymbolToCoder(enc, seqArr[j]);
+	}
+}
+
+void writeSequence(HuffmanEncoder& enc, uint16_t f, uint16_t s) {
+	uint8_t first = f >> 8;
+	uint8_t second = f & 0xff;
+	uint8_t third = s >> 8;
+	uint8_t fourth = s & 0xff;
+	uint8_t seqArr[4] = { first, second, third, fourth };
+	for (size_t j = 0; j < 4; j++)
+	{
+		writeSymbolToCoder(enc, seqArr[j]);
+	}
+}
+
 void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* rleVectors, std::vector<std::pair<int, int>>* compressVectors) {
 	std::ofstream output;
 	output.open("compressed.bin", std::ios::out | std::ios::binary);
@@ -239,20 +272,8 @@ void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* 
 			int next128 = 0;
 			int posInVector = 0;
 			// write first 128 sequence at the start
-			uint8_t first = rleVectors[i].at(0).first >> 8;
-			uint8_t second = rleVectors[i].at(0).first & 0xff;
-			uint8_t third = rleVectors[i].at(0).second >> 8;
-			uint8_t fourth = rleVectors[i].at(0).second & 0xff;
-			uint8_t seqArr[4] = { first, second, third, fourth };
-			for (size_t j = 0; j < 4; j++)
-			{
-				int symbol = seqArr[j];
-				if (symbol == EOF)
-					break;
-				if (symbol < 0 || symbol > 255)
-					throw std::logic_error("Assertion error");
-				enc.write(static_cast<uint32_t>(symbol));
-			}
+			writeSequence(enc, rleVectors[i].at(0));
+			
 			resRun = rleVectors[i].at(0).first;
 			
 			curPos += rleVectors[i].at(0).second;
@@ -265,12 +286,7 @@ void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* 
 																			&& compressVectors[i].at(posInVector).second <= 4)) {
 						for (size_t k = 0; k < compressVectors[i].at(posInVector).second; k++)
 						{
-							int symbol = compressVectors[i].at(posInVector).first;
-							if (symbol == EOF)
-								break;
-							if (symbol < 0 || symbol > 255)
-								throw std::logic_error("Assertion error");
-							enc.write(static_cast<uint32_t>(symbol));
+							writeSymbolToCoder(enc, compressVectors[i].at(posInVector).first);
 						}
 						curPos += compressVectors[i].at(posInVector).second;
 						resRun -= compressVectors[i].at(posInVector).second;
@@ -286,20 +302,8 @@ void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* 
 				if (next128 == rleVectors[i].size()) break;
 				if (next128 < rleVectors[i].size())
 				{
-					uint8_t first = rleVectors[i].at(next128).first >> 8;
-					uint8_t second = rleVectors[i].at(next128).first & 0xff;
-					uint8_t third = rleVectors[i].at(next128).second >> 8;
-					uint8_t fourth = rleVectors[i].at(next128).second & 0xff;
-					uint8_t seqArr[4] = { first, second, third, fourth };
-					for (size_t j = 0; j < 4; j++)
-					{
-						int symbol = seqArr[j];
-						if (symbol == EOF)
-							break;
-						if (symbol < 0 || symbol > 255)
-							throw std::logic_error("Assertion error");
-						enc.write(static_cast<uint32_t>(symbol));
-					}
+					writeSequence(enc, rleVectors[i].at(next128));
+					
 					curPos += rleVectors[i].at(next128).second;
 					if (next128 == rleVectors[i].size())
 					{
@@ -307,7 +311,7 @@ void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* 
 					}
 					else
 					{
-							resRun = rleVectors[i].at(next128).first;
+						resRun = rleVectors[i].at(next128).first;
 					}
 					
 				}
@@ -316,32 +320,15 @@ void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* 
 			if (curPos != numLines)
 			{
 				resRun = numLines - curPos;
-				uint8_t first = resRun >> 8;
-				uint8_t second = resRun & 0xff;
-				uint8_t third = 0 >> 8;
-				uint8_t fourth = 0 & 0xff;
-				uint8_t seqArr[4] = { first, second, third, fourth };
-				for (size_t j = 0; j < 4; j++)
-				{
-					int symbol = seqArr[j];
-					if (symbol == EOF)
-						break;
-					if (symbol < 0 || symbol > 255)
-						throw std::logic_error("Assertion error");
-					enc.write(static_cast<uint32_t>(symbol));
-				}
+				writeSequence(enc, resRun, 0);
+				
 				while (resRun != 0)
 				{
 					if (compressVectors[i].at(posInVector).first != 128 || (compressVectors[i].at(posInVector).first == 128
 						&& compressVectors[i].at(posInVector).second <= 4)) {
 						for (size_t k = 0; k < compressVectors[i].at(posInVector).second; k++)
 						{
-							int symbol = compressVectors[i].at(posInVector).first;
-							if (symbol == EOF)
-								break;
-							if (symbol < 0 || symbol > 255)
-								throw std::logic_error("Assertion error");
-							enc.write(static_cast<uint32_t>(symbol));
+							writeSymbolToCoder(enc, compressVectors[i].at(posInVector).first);
 						}
 						curPos += compressVectors[i].at(posInVector).second;
 						resRun -= compressVectors[i].at(posInVector).second;
