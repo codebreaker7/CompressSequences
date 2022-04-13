@@ -20,7 +20,7 @@ long get_file_size(const char* filename) {
 int main(int argc, char * argv[])
 {
     std::ifstream infile;
-	if (argc != 2)
+	if (argc < 2)
 	{
 		std::cout << "Need to provide a file name" << std::endl;
 		return -1;
@@ -87,32 +87,39 @@ int main(int argc, char * argv[])
 		}
 	}
 	infile.close();
-	// calculate total length of non-compressed sequences in each column
+
 	FrequencyTable frequencyTable(std::vector<uint32_t>(256, 0));
 	unsigned int offset = 0;
-	for (size_t i = 0; i < 3; i++)
+	if (argc == 3) // the last parameter is a name of distribution file
 	{
-		for (size_t j = 0; j < compressVector[i].size(); j++)
+		frequencyTable = loadFrequencyTable(argv[argc - 1]);
+	} 
+	else { // otherwise calculate our table
+		// calculate total length of non-compressed sequences in each column
+		for (size_t i = 0; i < 3; i++)
 		{
-			if (compressVector[i].at(j).first != 128)
+			for (size_t j = 0; j < compressVector[i].size(); j++)
 			{
-				lengthnon128[i] += compressVector[i].at(j).second;
-				offset += compressVector[i].at(j).second;
-				frequencyTable.set(compressVector[i].at(j).first, frequencyTable.get(compressVector[i].at(j).first) + compressVector[i].at(j).second);
-			}
-			else if (compressVector[i].at(j).first == 128 && compressVector[i].at(j).second <= 4) {
-				lengthnon128[i] += compressVector[i].at(j).second;
-				offset += compressVector[i].at(j).second;
-				frequencyTable.set(compressVector[i].at(j).first, frequencyTable.get(compressVector[i].at(j).first) + compressVector[i].at(j).second);
-			}
-			else
-			{
-				if (offset > 65535)
+				if (compressVector[i].at(j).first != 128)
 				{
-					length128[i] += ((offset / 65535) - 1);
-					length128[i] += (offset % 65535 != 0) ? 1 : 0;
+					lengthnon128[i] += compressVector[i].at(j).second;
+					offset += compressVector[i].at(j).second;
+					frequencyTable.set(compressVector[i].at(j).first, frequencyTable.get(compressVector[i].at(j).first) + compressVector[i].at(j).second);
 				}
-				offset = 0;
+				else if (compressVector[i].at(j).first == 128 && compressVector[i].at(j).second <= 4) {
+					lengthnon128[i] += compressVector[i].at(j).second;
+					offset += compressVector[i].at(j).second;
+					frequencyTable.set(compressVector[i].at(j).first, frequencyTable.get(compressVector[i].at(j).first) + compressVector[i].at(j).second);
+				}
+				else
+				{
+					if (offset > 65535)
+					{
+						length128[i] += ((offset / 65535) - 1);
+						length128[i] += (offset % 65535 != 0) ? 1 : 0;
+					}
+					offset = 0;
+				}
 			}
 		}
 	}
@@ -123,7 +130,9 @@ int main(int argc, char * argv[])
 	// store 128-based sequences
 	std::ofstream text_compress("compress.txt", std::ios::out);
 	std::ofstream file128;
+	std::ofstream file_residues;
 	file128.open("seq128.bin", std::ios::out | std::ios::binary);
+	file_residues.open("residues.bin", std::ios::out | std::ios::binary);
 	for (size_t i = 0; i < 3; i++)
 	{
 		file128.write((char*)&length128[i], sizeof(int));
@@ -196,10 +205,34 @@ int main(int argc, char * argv[])
 	{
 		file128.write((char*)&lengthnon128[i], sizeof(int));
 		//std::cout << lengthnon128[i] << std::endl;
-		//file_residues << lengthnon128[i];
+		file_residues.write((char*)&lengthnon128[i], sizeof(int));
 	}
 	// store residues
 	compressResFile(file128, frequencyTable, compressVector);
+
+	for (size_t i = 0; i < 3; i++)
+	{
+		for (size_t j = 0; j < compressVector[i].size(); j++)
+		{
+			if (compressVector[i].at(j).first != 128)
+			{
+				for (size_t k = 0; k < compressVector[i].at(j).second; k++)
+				{
+					file_residues.write((char*)&compressVector[i].at(j).first, sizeof(unsigned char));
+				}
+			}
+			else if (compressVector[i].at(j).first == 128 && compressVector[i].at(j).second <= 4)
+			{
+				for (size_t k = 0; k < compressVector[i].at(j).second; k++)
+				{
+					file_residues.write((char*)&compressVector[i].at(j).first, sizeof(unsigned char));
+				}
+			}
+		}
+	}
+
+	file_residues.flush();
+	file_residues.close();
 
 	file128.flush();
 	file128.close();
@@ -210,7 +243,10 @@ int main(int argc, char * argv[])
 	text_compress.close();
 
 	// compress all sequences and residues into a single file as a single stream
-	compressAsStream(numLines, rleVectors, compressVector);
+	compressAsStream(numLines, frequencyTable, rleVectors, compressVector);
+	compressAsStreamElement("element0.bin", numLines, frequencyTable, (rleVectors + 0), (compressVector + 0));
+	compressAsStreamElement("element1.bin", numLines, frequencyTable, (rleVectors + 1), (compressVector + 1));
+	compressAsStreamElement("element2.bin", numLines, frequencyTable, (rleVectors + 2), (compressVector + 2));
 	
 	std::vector<std::pair<unsigned short, unsigned short>> compressRestore[3];
 	

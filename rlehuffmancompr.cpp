@@ -211,18 +211,149 @@ void writeSequence(HuffmanEncoder& enc, uint16_t f, uint16_t s) {
 	}
 }
 
-void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* rleVectors, std::vector<std::pair<int, int>>* compressVectors) {
+void compressAsStream(int numLines, FrequencyTable& freqs, std::vector<std::pair<uint16_t, uint16_t>>* rleVectors, std::vector<std::pair<int, int>>* compressVectors) {
 	std::ofstream output;
 	output.open("compressed.bin", std::ios::out | std::ios::binary);
-	FrequencyTable freqs(std::vector<uint32_t>(256, 0));
+	
 	for (size_t i = 0; i < 3; i++)
 	{
-		for (size_t j = 0; j < compressVectors[i].size(); j++)
+		for (size_t j = 0; j < rleVectors[i].size(); j++)
 		{
-			if (compressVectors[i].at(j).first != 128 || (compressVectors[i].at(j).first == 128 && compressVectors[i].at(j).second <= 4))
-				freqs.set(compressVectors[i].at(j).first, freqs.get(compressVectors[i].at(j).first) + compressVectors[i].at(j).second);
+			uint8_t first = rleVectors[i].at(j).first >> 8;
+			uint8_t second = rleVectors[i].at(j).first & 0xff;
+			uint8_t third = rleVectors[i].at(j).second >> 8;
+			uint8_t fourth = rleVectors[i].at(j).second & 0xff;
+			freqs.set(first, freqs.get(first) + 1);
+			freqs.set(second, freqs.get(second) + 1);
+			freqs.set(third, freqs.get(third) + 1);
+			freqs.set(fourth, freqs.get(fourth) + 1);
 		}
 	}
+	CodeTree code = freqs.buildCodeTree();
+	const CanonicalCode canonCode(code, freqs.getSymbolLimit());
+	code = canonCode.toCodeTree();
+	std::vector<char> sequence;
+	// write corresponding symbols as a code
+	for (size_t i = 0; i < 256; i++)
+	{
+		sequence = code.getCode(i);
+		std::cout << i << "-";
+		for (size_t j = 0; j < sequence.size(); j++)
+		{
+			if (sequence.at(j) == 0)
+			{
+				std::cout << "0";
+			}
+			else
+			{
+				std::cout << "1";
+			}
+		}
+		std::cout << std::endl;
+	}
+	BitOutputStream bout(output);
+	try {
+		// Write code length table
+		for (uint32_t i = 0; i < canonCode.getSymbolLimit(); i++) {
+			uint32_t val = canonCode.getCodeLength(i);
+			// For this file format, we only support codes up to 255 bits long
+			if (val >= 256)
+				throw std::domain_error("The code for a symbol is too long");
+			// Write value as 8 bits in big endian
+			for (int j = 7; j >= 0; j--)
+				bout.write((val >> j) & 1);
+		}
+
+		HuffmanEncoder enc(bout);
+		enc.codeTree = &code;
+
+		for (size_t i = 0; i < 3; i++)
+		{
+			int curPos = 0;
+			int resRun = 0;
+			int next128 = 0;
+			int posInVector = 0;
+			// write first 128 sequence at the start
+			writeSequence(enc, rleVectors[i].at(0));
+
+			resRun = rleVectors[i].at(0).first;
+
+			curPos += rleVectors[i].at(0).second;
+			while (curPos != numLines)
+			{
+				// write residues
+				while (resRun != 0)
+				{
+					if (compressVectors[i].at(posInVector).first != 128 || (compressVectors[i].at(posInVector).first == 128
+						&& compressVectors[i].at(posInVector).second <= 4)) {
+						for (size_t k = 0; k < compressVectors[i].at(posInVector).second; k++)
+						{
+							writeSymbolToCoder(enc, compressVectors[i].at(posInVector).first);
+						}
+						curPos += compressVectors[i].at(posInVector).second;
+						resRun -= compressVectors[i].at(posInVector).second;
+					}
+					posInVector++;
+					if (posInVector >= compressVectors[i].size())
+					{
+						break;
+					}
+				}
+				// write next 128 sequence
+				next128++;
+				if (next128 == rleVectors[i].size()) break;
+				if (next128 < rleVectors[i].size())
+				{
+					writeSequence(enc, rleVectors[i].at(next128));
+
+					curPos += rleVectors[i].at(next128).second;
+					if (next128 == rleVectors[i].size())
+					{
+						resRun = numLines - curPos;
+					}
+					else
+					{
+						resRun = rleVectors[i].at(next128).first;
+					}
+
+				}
+
+			}
+			if (curPos != numLines)
+			{
+				resRun = numLines - curPos;
+				writeSequence(enc, resRun, 0);
+
+				while (resRun != 0)
+				{
+					if (compressVectors[i].at(posInVector).first != 128 || (compressVectors[i].at(posInVector).first == 128
+						&& compressVectors[i].at(posInVector).second <= 4)) {
+						for (size_t k = 0; k < compressVectors[i].at(posInVector).second; k++)
+						{
+							writeSymbolToCoder(enc, compressVectors[i].at(posInVector).first);
+						}
+						curPos += compressVectors[i].at(posInVector).second;
+						resRun -= compressVectors[i].at(posInVector).second;
+					}
+					posInVector++;
+					if (posInVector >= compressVectors[i].size())
+					{
+						break;
+					}
+				}
+			}
+		}
+		bout.finish();
+	}
+	catch (const char* msg) {
+		std::cerr << msg << std::endl;
+	}
+}
+
+void compressAsStreamElement(const char* outfile, int numLines, FrequencyTable& freqs, std::vector<std::pair<uint16_t, uint16_t>>* rleVectors, std::vector<std::pair<int, int>>* compressVectors) {
+	std::ofstream output;
+	output.open(outfile, std::ios::out | std::ios::binary);
+
 	for (size_t i = 0; i < 3; i++)
 	{
 		for (size_t j = 0; j < rleVectors[i].size(); j++)
@@ -256,7 +387,7 @@ void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* 
 		HuffmanEncoder enc(bout);
 		enc.codeTree = &code;
 
-		for (size_t i = 0; i < 3; i++)
+		for (size_t i = 0; i < 1; i++) // treat this parameter as an array
 		{
 			int curPos = 0;
 			int resRun = 0;
@@ -410,4 +541,18 @@ void decompressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>
 	catch (const char* msg) {
 		std::cerr << msg << std::endl;
 	}
+}
+
+FrequencyTable loadFrequencyTable(const char* filename) {
+	FrequencyTable ft(std::vector<uint32_t>(256, 0));
+	std::ifstream freq_file;
+	freq_file.open(filename, std::ios::in);
+	uint32_t val, freq;
+	while (freq_file >> val >> freq)
+	{
+		if (freq < 5) freq = 5;
+		ft.set(val, freq);
+	}
+	freq_file.close();
+	return ft;
 }

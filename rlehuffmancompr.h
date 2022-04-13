@@ -13,6 +13,8 @@ void decompressResFile(std::ifstream& input, std::vector<unsigned char>* resVect
 void writeSymbolToCoder(HuffmanEncoder& enc, uint32_t symb);
 void writeSequence(HuffmanEncoder& enc, std::pair<uint16_t, uint16_t>& pair);
 void writeSequence(HuffmanEncoder& enc, uint16_t f, uint16_t s);
-void compressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* rleVectors, std::vector<std::pair<int, int>>* compressVectors);
+void compressAsStream(int numLines, FrequencyTable& freqs, std::vector<std::pair<uint16_t, uint16_t>>* rleVectors, std::vector<std::pair<int, int>>* compressVectors);
+void compressAsStreamElement(const char* outfile, int numLines, FrequencyTable& freqs, std::vector<std::pair<uint16_t, uint16_t>>* rleVectors, std::vector<std::pair<int, int>>* compressVectors);
 uint8_t readSymbolFromDecoder(HuffmanDecoder& dec);
 void decompressAsStream(int numLines, std::vector<std::pair<uint16_t, uint16_t>>* rleVectors, std::vector<unsigned char>* resVector);
+FrequencyTable loadFrequencyTable(const char* filename);
